@@ -1,0 +1,52 @@
+name: Merge to Main
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      AMPLIFY_APP_ID: ${{ secrets.AMPLIFY_APP_ID }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+      BRANCH_NAME: "staging"
+      DIST_DIR: "dist"
+      S3_BUCKET: "amplify-poc-scalable--dev"
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: yarn
+      - name: Build
+        run: yarn build
+      - name: Zip build dir
+        run: cd $DIST_DIR && zip -r dist.zip .
+      - name: Update S3
+        run: aws s3 cp dist/dist.zip s3://$S3_BUCKET/latest/dist.zip
+      - name: Trigger Amplify deployment
+        id: start_deployment
+        run: |
+          DEPLOYMENT_ID=$(aws amplify start-deployment --app-id $AMPLIFY_APP_ID --branch-name $BRANCH_NAME --source-url s3://$S3_BUCKET/latest/dist.zip --query "jobSummary.jobId" --output text)
+          echo "Deployment ID: $DEPLOYMENT_ID"
+          echo "DEPLOYMENT_ID=$DEPLOYMENT_ID" >> $GITHUB_ENV
+      - name: Wait for Amplify Deployment
+        run: |
+          STATUS="PENDING"
+          while [[ "$STATUS" != "SUCCEED" && "$STATUS" != "FAILED" ]]; do
+            sleep 10
+            STATUS=$(aws amplify get-job --app-id $AMPLIFY_APP_ID --branch-name $BRANCH_NAME --job-id $DEPLOYMENT_ID --query "job.summary.status" --output text)
+            echo "Current status: $STATUS"
+          done
+
+          if [[ "$STATUS" == "FAILED" ]]; then
+            echo "Deployment failed!"
+            exit 1
+          fi
+
+          echo "🚀🎉 Deployment successful!"
